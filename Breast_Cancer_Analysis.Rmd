@@ -5,16 +5,13 @@ date: "`r Sys.Date()`"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
 ```{r import packages, include = FALSE}
 library(dplyr)
 library(bayesplot)
 library(janitor)
 library(rstan)
 library(rstanarm)
+library(broom.mixed)
 ```
 
 The bayesian analysis will focus on the Wisconsin Breast Cancer Dataset. This dataset has 568 records of health data from the UCI Machine Learning Repository. There are 568 rows and 32 features. Of the features, this analysis will focus on the diagnosis as one of the target features as a binary variable and then it will focus on the [insert random feature] as the regression target variable. 
