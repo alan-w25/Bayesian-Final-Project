@@ -12,6 +12,8 @@ library(janitor)
 library(rstan)
 library(rstanarm)
 library(broom.mixed)
+library(ggplot2)
+library(corrplot)
 ```
 
 The bayesian analysis will focus on the Wisconsin Breast Cancer Dataset. This dataset has 568 records of health data from the UCI Machine Learning Repository. There are 568 rows and 32 features. Of the features, this analysis will focus on the diagnosis as one of the target features as a binary variable and then it will focus on the [insert random feature] as the regression target variable. 
@@ -37,9 +39,253 @@ dim(breast_cancer_data)
 summary(breast_cancer_data)
 ```
 
-#####Part 1: Exploratory Data Analysis to Determine Priors for our Regression Analaysis
+#####Part 1: Exploratory Data Analysis and Data Preprocessing
 
 The continuous variable that will be studied for regression predictions is radius1 and the binary variable is going to be diagnosis. 
+
+Check if there are any missing variables 
+
+```{r}
+missing_values <- breast_cancer_data %>% 
+  summarise_all(~sum(is.na(.)))
+
+missing_values
+```
+No missing values found. 
+
+Let us first take a look at the distribution of the variable radius1 so that we can have a better idea of what type of data we're working with
 ```{r}
 
+breast_cancer_data |>
+  ggplot(aes(x = radius1)) + 
+  geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+  labs(title = "Distribution of the Radius1 Feature", xlab = "Radius1", ylab = "Frequency")
+
 ```
+
+
+
+Since there are repeat variables of the same kind, we can combine the radius1, radius2, radius3 and utilize the mean of those values as the new values. We will try that and see if there are any outliers in our data. 
+
+```{r}
+
+breast_cancer_merged <- breast_cancer_data |>
+  mutate(
+    radius = (radius1 + radius2 + radius3)/3, 
+    texture = (texture1 + texture2 + texture3)/3, 
+    perimeter = (perimeter1 + perimeter2 + perimeter3)/3, 
+    area = (area1 + area2 + area3)/3, 
+    smoothness = (smoothness1 + smoothness2 + smoothness3)/3, 
+    compactness = (compactness1 + compactness2 + compactness3)/3, 
+    concavity = (concavity1 + concavity2 + concavity3)/3 , 
+    concave_points = (concave_points1 + concave_points2 + concave_points3)/3, 
+    symmetry = (symmetry1 + symmetry2 + symmetry3)/3, 
+    fractal_dimension =  (fractal_dimension1 + fractal_dimension2 + fractal_dimension3)/3
+  ) |>
+  select(id, diagnosis, radius, texture, perimeter, area, smoothness, compactness, concavity, concave_points, symmetry, fractal_dimension)
+
+
+head(breast_cancer_merged)
+```
+Lets take a look at the summary difference between the two groups: malignant and benign tumors: 
+
+```{r malig vs benign}
+
+malignant_summary <- breast_cancer_merged[breast_cancer_merged$diagnosis == 1,]
+
+summary(malignant_summary)
+
+```
+
+```{r}
+
+benign_summary <- breast_cancer_merged[breast_cancer_merged$diagnosis == 0, ]
+
+summary(benign_summary)
+
+```
+
+[insert analysis]
+
+After merging the different variables together, we have a dataset with 1 response variable (diagnosis) and 10 potential predictor variables. Let us see if there are any outliers in any of the variables. 
+
+```{r}
+
+exclude_vars <- c("id", "diagnosis")
+numerical_vars <- sapply(breast_cancer_merged, is.numeric) 
+numerical_vars <- names(numerical_vars[numerical_vars & !(names(numerical_vars) %in% exclude_vars)])
+
+summary_plots <- list()
+for (var in numerical_vars) {
+  bin_width <- diff(range(breast_cancer_merged[[var]])) / sqrt(nrow(breast_cancer_merged))
+  p <- ggplot(breast_cancer_merged, aes_string(x = var, color = "diagnosis")) + 
+    geom_histogram(binwidth = bin_width, color = "blue", position = "identity", alpha = 0.5) + 
+    theme_minimal() +
+    ggtitle(paste("Histogram of feature", var))
+  summary_plots[[var]] <- p
+}
+
+summary_plots
+
+```
+After looking at the distribution of the data, we can see that there are some of these features are skewed in some capacity. 
+
+Features area, perimeter, radius, compactness, concavity, symmetry, and fractal_dimension seem to have right-skewed distributions. To combat this, we can perform log transform on the data, meaning taking the logarithm of the features, and then re-examine the distribution of the different features. We will be utilizing log(x+1) transformation because there are variables with values very close to 0 and thus will output negative logarithmic values, which are not valid in context of the variables, which represent measurements. 
+
+```{r log transform}
+breast_cancer_log <- breast_cancer_merged |>
+  mutate(radius = log(radius+1), 
+    texture = log(texture+1), 
+    perimeter = log(perimeter+1), 
+    area = log(area+1), 
+    compactness = log(compactness+1), 
+    concavity = log(concavity+1) , 
+    concave_points = log(concave_points+1), 
+    symmetry = log(symmetry+1), 
+    fractal_dimension =  log(fractal_dimension+1)
+  )
+
+breast_cancer_sqrt <- breast_cancer_merged |>
+  mutate(radius = sqrt(radius), 
+    texture = sqrt(texture+1), 
+    perimeter = sqrt(perimeter), 
+    area = sqrt(area), 
+    compactness = sqrt(compactness), 
+    concavity = sqrt(concavity) , 
+    concave_points = sqrt(concave_points), 
+    symmetry = sqrt(symmetry), 
+    fractal_dimension =  sqrt(fractal_dimension)
+  )
+
+(head(breast_cancer_merged))
+(head(breast_cancer_sqrt))
+
+
+```
+
+Let us check the plots again, comparing the sqrt approach vs log plus one approach
+```{r}
+exclude_vars <- c("id", "diagnosis")
+numerical_vars <- sapply(breast_cancer_log, is.numeric) 
+numerical_vars <- names(numerical_vars[numerical_vars & !(names(numerical_vars) %in% exclude_vars)])
+
+summary_plots <- list()
+for (var in numerical_vars) {
+  bin_width <- diff(range(breast_cancer_log[[var]])) / sqrt(nrow(breast_cancer_log))
+  p <- ggplot(breast_cancer_log, aes_string(x = var, color = "diagnosis")) + 
+    geom_histogram(binwidth = bin_width, color = "blue", position = "identity", alpha = 0.5) + 
+    theme_minimal() +
+    ggtitle(paste("Histogram of feature", var))
+  summary_plots[[var]] <- p
+}
+
+summary_plots
+```
+```{r sqrt transform}
+numerical_vars <- sapply(breast_cancer_sqrt, is.numeric) 
+numerical_vars <- names(numerical_vars[numerical_vars & !(names(numerical_vars) %in% exclude_vars)])
+
+summary_plots <- list()
+for (var in numerical_vars) {
+  bin_width <- diff(range(breast_cancer_sqrt[[var]])) / sqrt(nrow(breast_cancer_sqrt))
+  p <- ggplot(breast_cancer_sqrt, aes_string(x = var, color = "diagnosis")) + 
+    geom_histogram(binwidth = bin_width, color = "red", position  = "identity", alpha = 0.5) + 
+    theme_minimal() +
+    ggtitle(paste("Histogram of feature", var))
+  summary_plots[[var]] <- p
+}
+
+summary_plots
+
+```
+
+It seems that sqrt transformation does a better job at making the distributions of the data approximately normal. We will then normalize the data so that the scale is the same. We will use a min max scaler to give everything a mean of 0 and a standard deviation of 1. 
+
+```{r standard scaler}
+
+numerical_vars <- sapply(breast_cancer_sqrt, is.numeric) 
+features_to_scale <- names(numerical_vars[numerical_vars & !(names(numerical_vars) %in% c('id', 'diagnosis'))])
+
+breast_cancer_scaled <- breast_cancer_sqrt |> 
+      mutate(across(all_of(features_to_scale), ~ (.- min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE))))
+
+head(breast_cancer_scaled)
+
+```
+
+Now let's check the correlation matrix between the radius (our repsonse variable) and the other variables
+
+```{r}
+
+correlation_matrix <- cor(breast_cancer_merged)
+
+corrplot(correlation_matrix, method = "circle")
+
+
+
+```
+
+From the correlation plot, we can see that the radius field has the greatest correlation with area, perimeter, and concave points. This would lead us to believe that these are the most important variables when developing a regression model to predict the radius. Further, I would like to investigate how the diagnosis impacts the radius. 
+
+######Part 2: Bayesian Regression Algorithms on radius
+
+We want to see if there is any correlation between the radius and perimeter with respect to the diagnosis of the tumor
+
+We do not have any good prior knowledge in the domain of tumor prediction, so we will be utilizing weakly informative priors and let the data speak. 
+
+Let's first graph the relationship between radius and perimeter
+
+```{r}
+breast_cancer_scaled |> 
+  ggplot(aes(x = concave_points, y = radius, color = diagnosis)) +
+  geom_point() + 
+  labs(title = "Relationship between radius and perimeter", xlab = "perimeter", ylab = "radius")
+```
+There seems to be a very good correlation between the radius and the perimeter. Further, it seems that the benign tumors have a smaller perimeter and smaller radius on average compared to the malignant tumors. 
+
+Now we will conduct posterior simulation using stan_glm 
+
+```{r}
+
+main_model <- stan_glm(
+  radius ~ perimeter + diagnosis, 
+  data = breast_cancer_scaled, 
+  family = gaussian, 
+  prior = normal(0,2.5, autoscale = TRUE), 
+  prior_aux = exponential(1,autoscale = TRUE), 
+  prior_intercept = normal(0, 10, autoscale = TRUE), 
+  chains = 4, 
+  iter = 2*5000, 
+  seed = 84375
+)
+
+
+
+```
+
+```{r}
+mcmc_trace(main_model)
+```
+```{r}
+
+mcmc_dens(main_model)
+
+```
+```{r}
+mcmc_dens_overlay(main_model)
+```
+
+
+```{r}
+mcmc_acf(main_model)
+```
+
+
+```{r}
+rhat(main_model)
+```
+
+
+
+
+######Part 3: Classification Algorithms on diagnosis
