@@ -1,0 +1,654 @@
+---
+title: "Clinical Heart Failure Predictions"
+author: "Alan Wu"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r import packages, include = FALSE}
+library(dplyr)
+library(bayesplot)
+library(janitor)
+library(rstan)
+library(rstanarm)
+library(broom.mixed)
+library(ggplot2)
+library(corrplot)
+library(tidybayes)
+library(tidyverse)
+library(bayesrules)
+library(caret)
+
+```
+
+The Bayesian Analysis will focus on the UCI Heart Failure Clinical Records dataset, which has features that deal with medical records of patients who had heart failure. These records were collected in their following period and we will be predicting their survival with this data set. Each patient had 11 features collected from them, with the 12th feature being the target variable: deaht_event <br>
+
+Dataset: https://archive.ics.uci.edu/dataset/519/heart+failure+clinical+records
+
+The dataset consists of 12 features: <br> 
+age: the age of the patient in years <br> 
+creatinine_phosphokinase: level of the CPK enzyme in the blood in mcg/L <br> 
+anemia: decrease of red blood cells or hemoglobin	<br>
+diabetes: if the patient has diabetes <br> 
+ejection_fraction: percentage of the blood leaving the heart at each contraction <br> 
+high_blood_pressure: if the patient has high blood pressure or not<br>
+platelets: platelets in the blood in kiloplatelets/mL <br>
+serum_creatinine: level of serum creatinine in the blood	in mg/dL  <br> 
+serum_sodium: level of serum sodium in the blood <br> 
+smoking: if the patient smokes or not <br>
+time: follow-up period <br>
+death_event: if the patient died during the follow-up period	<br>
+sex: man or woman <br>
+
+
+
+```{r import data}
+
+heart_failure_data <- read.csv("heart_failure_clinical_records_dataset.csv")
+heart_failure_data <- clean_names(heart_failure_data)
+heart_failure_data <- heart_failure_data |> 
+  rename(anemia = anaemia)
+
+head(heart_failure_data)
+```
+
+```{r}
+dim(heart_failure_data)
+```
+
+There are 299 rows and 13 columns, 1 of which is the response variable, death_event. We are going to predict whether or not the patient died based on the different features that exist. 
+
+The project will focus on several methods that will predict this variable death event: <br>
+1. Logistic Regression <br>
+2. Naive Bayes Classifier <br>
+3. Random Forest Classifier <br>
+
+I will also find out if there is correlation between one of the continuous variables: creatinine phosphokinase and ejection_fraction and other variables using the following methods: <br>
+1. Linear Regression  <br>
+2. Linear Regression (interaction term) <br>
+
+```{r}
+summary(heart_failure_data)
+```
+
+<h2>Part 1: Exploratory Data Analysis</h2>
+
+
+```{r}
+heart_failure_data |> 
+   summarise_all(~sum(is.na(.)))
+```
+No missing records, so we can take a look at the individual variables. First let's take a look at a correlation matrix between the all the variables so we can pick some variables that will work well with both of our variables and be good predictors.
+
+```{r}
+
+corr_matrix <- cor(heart_failure_data, use = "complete.obs")
+corrplot(corr_matrix, method = "circle")
+
+
+```
+
+
+From the correlation matrix, we can tell that there are a few variables of interest when looking at the time variable.<br>
+
+There seems to be some weak correlation between anemia, age, high blood pressure and serum creatinine. Based on this, let's use the high blood pressure variable and the age variable to see if we can predict serum_creatinine. In context, the serum creatinine level is important because it is a blood test that measures how much blood is flowing through the kidneys and if the kidneys are functioning well. Although this may not be immediately relevant to clinical heart failure, if the blood flow to the kidneys and through the urinary tract is impacted, then it may indicate problems that exist in the cardiovascular system.
+
+Further, it seems that death event has the most correlation with time, serum_creatinine, ejection_fraction, age, and serum sodium. We will use these variables in our analysis and prediction of the death_event. The death event variable is the target variable and is relevant in context because we will be able to see if the patients who had heart failure will survive after their followup period. 
+
+
+<h2>Part 2: Linear Regression on the time variable</h2>
+
+The variables that we are interested in is to see if there is a relationship between the follow up period and the age of the patient with respect if the patient has high blood pressure or not.
+
+I will start with a linear regression model with no interaction term. I will also use default priors, since there I do not have any prior knowledge regarding the distribution of follow-up period in clinical heart failure patients.
+
+First let us do a preliminary regression graph and see the correlation: 
+
+```{r}
+
+heart_failure_data |> 
+  ggplot(aes(x = age, y = time, color = high_blood_pressure)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = FALSE) + 
+  labs(xlab = "age of patient", ylab = "follow up period ")
+
+```
+
+The correlation seems to be pretty weak, as the age and the time seem to look like a bit of random noise. However, we can see that high blood pressure is also pretty weakly related, as it seems that a lot of the clinical heart failure patients have high blood pressure and there's no distinct split. 
+
+<h3>Linear Regression No Interaction Term</h3>
+
+```{r regression model no interaction term}
+
+main_model <- stan_glm(
+  time ~ age + high_blood_pressure, 
+  data = heart_failure_data, 
+  family = gaussian, 
+  prior = normal(0,2.5, autoscale = TRUE), 
+  prior_intercept = normal(0,2.5, autoscale = TRUE), 
+  prior_aux = exponential(1, autoscale = TRUE), 
+  chains = 4, 
+  iter = 2 * 5000, 
+  seed = 84375
+)
+
+```
+
+
+```{r}
+prior_summary(main_model)
+```
+
+Now let's check the mcmc diagnostics: 
+
+```{r}
+mcmc_trace(main_model)
+```
+
+```{r}
+mcmc_dens_overlay(main_model)
+```
+
+```{r}
+mcmc_acf(main_model)
+```
+
+```{r}
+neff_ratio(main_model)
+```
+
+```{r}
+rhat(main_model)
+```
+
+Taking a look at the numerical and graphical mcmc diagnostics of the model with no interaction term, it shows that it performs well. 
+
+Now we will look at the tidy summary of the posterior variables: 
+
+```{r}
+tidy(main_model, c("fixed", "aux"), conf.int = TRUE, conf.level = 0.80 )
+```
+
+
+The interpretation of the tidy summary is that on average, the follow up period will be 1.35 days shorter with an increase in 1 year in age. Further, it seems that people with high_blood_pressure have a shorter follow up period of 28 days than those without high blood pressure. 
+
+For every one year increase in age, the followup will be 1.35 days shorter given all other variables are kept constant. 
+
+Further, for patients with high blood pressure, the follow up period will be average 28 days shorter than patients without high blood pressure. 
+
+Further, when all the other variables are kept at 0, then the average follow up period is 222 days. 
+
+
+Making posterior predictions using the main model<br>
+I want to find the posterior distribution of a heart disease patient who is 50 years old and has anemia
+```{r}
+
+new_data <- data.frame(
+  age = 50, 
+  high_blood_pressure = 1
+)
+
+posterior_prediction_model <- posterior_predict(main_model, newdata = new_data)
+
+mcmc_areas(posterior_prediction_model) + 
+  ggtitle("Distribution of Posterior Predictive Model for a 50 year old with high blood pressure") +
+  xlab("Follow up period (days)") + 
+  scale_x_continuous(
+    breaks = seq(-200, 400, by = 50)  # Define the range and interval for breaks
+  )
+
+
+
+```
+The distribution shows that the average follow up days is going to be ~125 days. We can do a little more investigating by looking at the mean, sd, and median summary of the posterior predictions 
+
+```{r post predict tidy}
+posterior_data <- data.frame(posterior_prediction_model)
+
+posterior_data |> 
+  summarize(
+    mean = mean(posterior_prediction_model), 
+    median = median(posterior_prediction_model),
+    sd = sd(posterior_prediction_model),
+  )
+```
+
+The mean of a patient who is 50 years old and has a high blood pressure is average 125.93 days with a large standard deviation of 75.5 days. 
+
+
+<h3>Linear Regression With Interaction Term</h3>
+
+
+Let's take a look if adding an interaction term between the age and the high blood pressure variable would be beneficial to our analysis. The predictions currently seem very weak and adding this term may improve the correlation 
+
+I will be making the same assumptions for the prior as the previous model since we do not have prior knowledge. 
+
+```{r}
+
+interaction_regression <- stan_glm(
+    time ~ age + high_blood_pressure + high_blood_pressure:age, 
+    data = heart_failure_data, 
+    family = gaussian, 
+    prior = normal(0,2.5, autoscale = TRUE), 
+    prior_intercept = normal(0,2.5, autoscale = TRUE), 
+    prior_aux = exponential(1, autoscale = TRUE), 
+    chains = 4, 
+    iter = 2 * 5000, 
+    seed = 84375
+  )
+```
+
+```{r}
+prior_summary(interaction_regression)
+```
+
+Now let's check the mcmc diagnostics again: 
+
+```{r}
+mcmc_trace(interaction_regression)
+```
+
+```{r}
+mcmc_dens_overlay(interaction_regression)
+```
+
+```{r}
+mcmc_acf(interaction_regression)
+```
+
+```{r}
+neff_ratio(interaction_regression)
+```
+
+```{r}
+rhat(interaction_regression)
+```
+
+The results are good. The neff_ratio is a little lower than the previous model we tested. Let's do a comparison on the two models using the same posterior prediction
+
+What we can do now is take a look at the plausibility of interaction graphically and see if we may need it
+```{r}
+heart_failure_data |> 
+  add_fitted_draws(interaction_regression, n = 50) |> 
+  ggplot(aes(x = age, y = time, color = high_blood_pressure )) + 
+  geom_line(aes(y = .value, group = paste(high_blood_pressure, .draw)), alpha = .1) +
+  geom_point(size = 0.1) + 
+  ggtitle("50 Draws Posterior Model for Clinical Heart Failure Model")
+
+
+```
+
+Although there does not seem to be a very clear direction of the linearity in predicting the time, there seems to be a lot of interaction between the high blood pressure and the age. This means that including an interaction term could potentially make our predictions more accurate than compared to the model without an interaction term. In context, this would suggest that the fact that somebody has high blood pressure is related to age. This may be the case, as with higher age there is greater prevalence of high blood pressure. 
+
+```{r}
+tidy(interaction_regression, effects = c("fixed", "aux"), conf.int = TRUE, conf.level = 0.99)
+```
+
+Based on the tidy summary however there is a slight negative correlation, of -.76 and the 99% confidence interval includes the number 0, ranging from -2.7 to 1.3. This suggests that the interaction between age and whether or not a patient has high blood pressure could have really no impact on the model performance, albeit having a slight negative correlation. 
+
+We can also conduct hypothesis testing on the model to see if the interaction term is required: Let's find the probability that the interaction term is greater than and less than zero.
+
+```{r}
+library(posterior)
+posterior_samples <- as.data.frame(interaction_regression)
+
+prob_greater_than_zero <- mean(posterior_samples$`age:high_blood_pressure` > 0)
+prob_less_than_zero <- mean(posterior_samples$`age:high_blood_pressure` < 0)
+
+```
+
+```{r}
+prob_greater_than_zero
+```
+
+```{r}
+prob_less_than_zero
+```
+
+We can interpret these probabilites as the following: if the probability of either greater than zero or less than zero is near 1, (0.95 or greater), then we have strong evidence that the interaction is different from zero. However, in both cases, we see that the probability that th example is less than 0.95 and that it is significantly off. These results indicate that our interaction term is really not needed or significant in the model.
+
+Before model comparison, I will use the same predictive variables: a 50 year old with anemia to see if the interaction term has impact on the posterior distribution of the posterior prediction. 
+
+```{r}
+posterior_prediction_model_int <- posterior_predict(interaction_regression, newdata = new_data)
+
+mcmc_areas(posterior_prediction_model_int) + 
+  ggtitle("Distribution of Posterior Predictive Model (With Interaction) for a 50 year old with high blood pressure") +
+  xlab("Follow up period (days)") + 
+  scale_x_continuous(
+    breaks = seq(-200, 400, by = 50)  # Define the range and interval for breaks
+  )
+```
+```{r}
+posterior_data_int <- data.frame(posterior_prediction_model)
+
+posterior_data_int |> 
+  summarize(
+    mean = mean(posterior_prediction_model_int), 
+    median = median(posterior_prediction_model_int),
+    sd = sd(posterior_prediction_model_int),
+  )
+```
+When compared to the main model without any interaction term, the model with the interaction term estimates a higher mean follow up period of 132 days compared to the 125 days. We will do some model comparison to see which model is performing better with respect to the data. 
+
+<h3>Model Comparisons Between the Main and Interaction Model</h3>
+
+We can do a posterior predictive check to see which of the models fits the simulations better. 
+
+```{r ppcheck main}
+pp_check(main_model) + 
+  ggtitle("Posterior Predictive Check Main Model Predicting Follow-Up Period")
+```
+
+```{r ppcheck interact}
+pp_check(interaction_regression) + 
+  ggtitle("Posterior Predictive Check Interaction Model Predicting Follow-Up Period")
+```
+
+Based on both of the graphs, we can see that the posterior predictive check is pretty poor. They both look like they are trying to simulate a trough in the graph that does not exist. This means that the models are not good at fitting the posterior distribution and that the predictor variables are probably weakly informative of the response variable, follow up time. 
+
+It is pretty clear that neither of the models perform that well, but for analysis and comparison we will compare the two models using loo and cross validation. 
+
+```{r cv}
+set.seed(84375)
+cv_main <- prediction_summary_cv(model = main_model, data=heart_failure_data, k = 10)
+cv_int <- prediction_summary_cv(model = interaction_regression, data = heart_failure_data, k = 10)
+
+cv_main$folds
+```
+
+```{r}
+cv_main$cv
+```
+
+```{r}
+cv_int$folds
+```
+
+```{r}
+cv_int$cv
+```
+
+By comparing the scaled MAE, we can see that both models do not perform very well. The predictors that we picked are weakly infomrative of the response variable of time. However, we can see that the scaled mae of the original model is better than that of the interaction model. Let's use loo to confirm the cv approach. 
+
+```{r}
+loo_main <- loo(main_model)
+loo_main
+```
+
+```{r}
+loo_int <- loo(interaction_regression)
+loo_int
+```
+
+```{r}
+loo_compare(loo_int,loo_main)
+```
+
+The interaction model is slightly worse in elpd than the main model. This combined with the fact that the cv was worse means that the interaction term did not really have a positive impact on the performance on the model and we should use the main model. However, it is important to note that the main model's performance is also not that good. The scaled mae for cross validation was 0.85, meaning it was not able to predict across most scenarios for the variable follow up days time.  
+
+<h2>Part 2: Classification on the death event</h2>
+
+For the classification of death_event variable, I will apply one in class technique and compare using two out of class techniques and compare the performance of the models.
+
+The following methods will be applied: <br> 
+1. Logistic Regression <br>
+2. Naive Bayes Classifier <br>
+3. Random Forest Algorithm <br>
+
+
+Since we are using models that are not necessarily 'bayesian' we will use a train_test_split methodology, splitting the data into training sets and test sets. 
+
+```{r split}
+set.seed(84375)
+heart_failure_classification <- heart_failure_data |> 
+  select(death_event, serum_creatinine, ejection_fraction)
+
+head(heart_failure_classification)
+
+train_test_split <- createDataPartition(heart_failure_classification$death_event, p = 0.7, list = FALSE, times = 1)
+classification_train <- heart_failure_classification[train_test_split, ]
+classification_test <- heart_failure_classification[-train_test_split,]
+
+
+```
+
+
+```{r}
+head(classification_train)
+```
+
+```{r}
+head(classification_test)
+```
+
+<h3>Logistic Regression Model</h3>
+
+Let us figure out the distribution of death event and its relationship with serum_creatinine and ejection_fraction
+
+```{r initial graphical}
+heart_failure_data |>
+  ggplot(aes(x = ejection_fraction, y = serum_creatinine, color = death_event))+ 
+  geom_point()
+
+```
+There seems to be a relative split in the value of serum creatinine by ejection fraction and those patients who died and those who survived. This leads me to believe that these two varialbes with higher correlation could be of good prediction. 
+
+We can use individual graphs to plot if there is a good decision split for both serum_creatinine and ejection_fraction
+
+
+```{r}
+heart_failure_data |>
+  ggplot(aes(x = serum_creatinine, fill = factor(death_event))) +
+    geom_density(alpha = 0.5) +
+    labs(x = "Serum Creatinine", y = "Density", fill = "Death Event") +
+    ggtitle("Density Plot of Serum Creatinine by Death Event")
+
+```
+
+```{r}
+heart_failure_data |>
+  ggplot(aes(x = ejection_fraction, fill = factor(death_event))) +
+    geom_density(alpha = 0.5) +
+    labs(x = "Ejection Fraction", y = "Density", fill = "Death Event") +
+    ggtitle("Density Plot of Ejection Fraction by Death Event")
+
+```
+These graphs show that there could be relative split between the two variables and the variable death_event. 
+
+Since we have no prior knowledge of the model data variables, we can use default priors: 
+
+```{r}
+log_reg <- stan_glm(
+  death_event ~ serum_creatinine + ejection_fraction, 
+  data = classification_train, 
+  family = binomial,
+  chains = 4,
+  iter = 5000 * 2,
+  seed = 84375)
+```
+```{r}
+prior_summary(log_reg)
+```
+Now mcmc diagnostic: 
+```{r}
+mcmc_trace(log_reg)
+```
+
+```{r}
+mcmc_dens_overlay(log_reg)
+```
+
+```{r}
+mcmc_acf(log_reg)
+```
+
+```{r}
+neff_ratio(log_reg)
+```
+
+```{r}
+post_samp <- data.frame(log_reg)
+rhat(c(post_samp$`X.Intercept.`))
+rhat(c(post_samp$serum_creatinine))
+rhat(post_samp$ejection_fraction)
+```
+
+```{r}
+pp_check(log_reg) + 
+  ggtitle("Posterior Predictive Check Logistic Regression")
+```
+The results are good. All the mcmc simulations and the numerical variables are in line with what we expect them to be. 
+
+Further, the ppcheck shows that the Y is following the same trend as yrep, meaning the model fits the data relatively well. Further we can see that the distribution of the posterior predictive check has peaks at 0 and 1, which are what we expect for outcomes for the logistic regression model. 
+
+Let's do a tidy summary of this model: 
+
+```{r}
+tidy(log_reg, c("fixed","aux"), conf.int = TRUE, conf.level = 0.8)
+```
+
+The tidy summary tells us the coefficient estimates of the logistic regression model. For the serum_creatinine predictor, we can confidently say that given all the other variables are held constant, the typical log odds changes by 0.63 meaning, it will become more likely for death event to happen. Further, the ejection fraction has estimate -0.06, with a small standard error, which implies that the log odds will change typically by -0.06. The death event log odds will decrease with the ejection_fraction. 
+
+
+When all the other predictors are = 0, then the log odds is 0.8. 
+
+
+We need to do posterior prediction on the test data. We will use a threshold of 0.5 to represent the death event, although there are better ways to pick thresholds.
+
+```{r}
+
+posterior_predictions_log_reg <- posterior_predict(log_reg, newdata = classification_test)
+post_predict_df <- data.frame(posterior_predictions_log_reg)
+mean_predictions <- apply(posterior_predictions_log_reg, 2, mean)
+predicted_classes_lr <- ifelse(mean_predictions > 0.5, 1, 0)
+
+predicted_classes_lr
+```
+
+```{r}
+align_predict_lr <- as.data.frame(predicted_classes_lr)
+align_predict_lr
+```
+
+
+```{r}
+
+predictions_log <- factor(align_predict_lr$predicted_classes_lr, levels = c(0, 1))
+valid_actual_labels <- factor(classification_test$death_event, levels = c(0, 1))
+conf_matrix_log_reg <- confusionMatrix(predictions_log, valid_actual_labels)
+
+conf_matrix_log_reg 
+```
+
+The accuracy is 0.82
+
+AUC: 
+```{r}
+library(pROC)
+roc_lr <- roc(response = classification_test$death_event, predictor = align_predict_lr$predicted_classes_lr)
+auc_value <- auc(roc_lr)
+auc_value
+```
+
+The auc is 0.63
+<h3>Naive Baye's Classifier</h3>
+
+The naive bayes classifier will have a similar process as the logistic regression model. First we will train it on our training data and then make posterior predictions. 
+
+```{r}
+library(e1071)
+naive_baye_model <- naiveBayes(death_event ~ serum_creatinine + ejection_fraction, data = classification_train)
+```
+
+```{r}
+naive_baye_predictions <- predict(naive_baye_model, newdata = classification_test, type="raw")
+naive_baye_predictions
+```
+We have the predictions for the two classes, so let's take the prediction thats larger as the test prediction: 
+```{r}
+predicted_class_nb <- ifelse(naive_baye_predictions[, 2] > 0.5, 1, 0)
+
+aligned_nb <- data.frame(predicted_class_nb)
+
+# Convert predictions to a factor
+predicted_factor_nb <- factor(predicted_class_nb, levels = c(0, 1))
+
+predicted_factor_nb
+
+
+```
+
+Now we can evaluate like the other model and check the accuracy: 
+```{r}
+conf_matrix_nb <- confusionMatrix(predicted_factor_nb, valid_actual_labels)
+conf_matrix_nb
+```
+
+```{r auc}
+roc_nb <- roc(response = classification_test$death_event, predictor = predicted_class_nb)
+auc_nb <- auc(roc_nb)
+auc_nb
+```
+
+AUC: 0.63
+
+Both the auc and the accuracy are slightly worse than the logistic regression model that we developed. Let's take a look at the random forest algorithm 
+
+```{r}
+library(randomForest)
+rf_model <- randomForest(death_event ~ serum_creatinine + ejection_fraction, data = classification_train)
+rf_predictions <- predict(rf_model, newdata = classification_test)
+rf_predictions
+```
+
+```{r}
+predicted_class_rf <- ifelse(rf_predictions > 0.5, 1, 0)
+aligned_rf <- data.frame(predicted_class_rf)
+# Convert predictions to a factor
+predicted_factor_rf <- factor(predicted_class_rf, levels = c(0, 1))
+predicted_factor_rf
+
+```
+
+```{r}
+conf_matrix_rf<- confusionMatrix(predicted_factor_rf, valid_actual_labels)
+conf_matrix_rf
+```
+
+```{r}
+roc_rf <- roc(response = classification_test$death_event, predictor = predicted_class_rf)
+auc_rf <- auc(roc_rf)
+auc_rf
+```
+
+
+Just taking a look at the three models, here are the comparisons: <br>
+All models were trained on the same training data and fit on the testing data to determine results: <br>
+
+1. Logistic Regression: 0.82 accuracy, 0.63 AUC <br>
+2. Naive Baye's Classifier: 0.78 accuracy, 0.63 AUC <br> 
+3. Random Forest Model: 0.73 accuracy, 0.65 AUC <br>
+
+In conclusion, the Logistic Regression Model performs the best when under the conditions of the same training set and the same test set, with the same seed. It seems to output the greatest AUC, which means that the model is good at predicting true positives and predicting true negatives. 
+
+
+<h2>Project Conclusion</h3>
+
+In this analysis, there are a few things that can be summarized: <br>
+
+I conducted regression and classification problems using bayesian and other techniques. The regression portion consisted of predicting the serum_creatinine based on the age of the people and also whether or not people had high blood pressure or not. The classification portion consisted of predicting whether or not the patient had survived after the follow up period, given their serum_creatinine levels and ejection fraction levels. <br>
+
+The variables that were chosen to use as predictor variables were found in a correlation matrix and the variables that seemed to have the greatest correlation visually, no matter negative or positive. There were few variables like that so it was easy to choose. <br>
+
+For the regression task, I used stan_glm model with default priors, given I had no background knowledge on the topic, it would be risky to make good predictions based on no knowledge, so I used default priors. The variables that I ended up choosing were serum_creatinine and high_blood_pressure, because they had moderate correlation in the correlation matrix. Further, I then tested the model without interaction vs. the model with interaction. The result was that both models performed poorly, as correlation between follow up time and age and high blood pressure was weak. However, the interaction term was tested and numerically concluded that it was not required in the model. It performed worse in cross validation and loo_compare. <br>
+
+For the classification task, I tested three classification models on the death_event variable: logistic regression (simulated using rstanarm), naive bayes classifier, and also a random forest model. The data, for the sake of the non-stanglm simulated models, was split into a test set and a train set. The test set was used as my benchmark to compare the different models using AUC (area under curve) and accuracy from a confusion matrix. Overall, I concluded that the logistic regression model had the greatest predictive capability because it had the greatest accuracy and auc on the test data. The model that I picked, the logistic regression, had a test accuracy of 0.82 and test auc of 0.63.
+
+Some future work that can be done on this dataset is to conduct feature selection or some sort of data scaling to get better results. Perhaps discriminating by sex can get us better, more informative results in predictions based on heart failure. This preliminary analysis has given us good results and perhaps other models may perform better on the data based on their mathematical background. 
+
+Credit: <br>
+
+Dataset: https://archive.ics.uci.edu/dataset/519/heart+failure+clinical+records <br>
+
+On my honor, I have neither received nor given any unauthorized assistance on this project, Alan Wu (208000574)
